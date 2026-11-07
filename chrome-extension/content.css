@@ -1,5 +1,5 @@
 /* =========================================================
-   Flow Veo 3 Cleaner - Widget Overlay Styles v1.3.1
+   Flow Veo 3 Cleaner - Widget Overlay Styles v2.1.0 (Hybrid Turbo)
    ========================================================= */
 
 #veo3-cleaner-widget {
@@ -73,7 +73,6 @@
   color: #ffffff !important;
 }
 
-/* Nút nhỏ Reopen Pill mở lại khi widget đã tắt */
 #veo3-reopen-pill {
   position: fixed;
   bottom: 20px;
@@ -139,6 +138,23 @@
   color: #81c995;
 }
 
+.veo3-api-status-box {
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.veo3-api-badge.active {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  background: rgba(147, 52, 230, 0.2);
+  color: #d7aefb;
+  border: 1px solid #9334e6;
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(147, 52, 230, 0.25);
+}
+
 .veo3-toggle-row {
   background: #242629;
   padding: 8px 10px;
@@ -176,7 +192,7 @@
 .veo3-progress-bar {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, #8ab4f8, #f28b82);
+  background: linear-gradient(90deg, #8ab4f8, #9334e6);
   transition: width 0.3s ease;
 }
 
@@ -194,12 +210,6 @@
   margin-bottom: 12px;
 }
 
-.veo3-actions-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
 .veo3-btn {
   padding: 9px 12px;
   border-radius: 8px;
@@ -211,20 +221,26 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: background-color 0.15s ease, transform 0.05s ease;
+  transition: all 0.2s ease;
 }
 
 .veo3-btn:active {
   transform: scale(0.98);
 }
 
-.veo3-btn.danger {
-  background: #ea4335;
+.veo3-btn.turbo {
+  background: linear-gradient(90deg, #1a73e8, #9334e6);
   color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  box-shadow: 0 4px 15px rgba(147, 52, 230, 0.4);
 }
 
-.veo3-btn.danger:hover {
-  background: #d93025;
+.veo3-btn.turbo:hover {
+  background: linear-gradient(90deg, #1b66ca, #8222d4);
+  box-shadow: 0 6px 20px rgba(147, 52, 230, 0.6);
+  transform: translateY(-1px);
 }
 
 .veo3-btn.secondary {
@@ -236,18 +252,13 @@
   background: #4f5357;
 }
 
-.veo3-btn.warning {
-  background: #f9ab00;
-  color: #202124;
-}
-
 .veo3-console {
   background: #111214;
   border-radius: 8px;
   padding: 8px 10px;
   height: 95px;
   overflow-y: auto;
-  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-family: Consolas, Monaco, monospace;
   font-size: 11px;
   line-height: 1.45;
   color: #9aa0a6;
@@ -258,9 +269,3 @@
 .veo3-log-success { color: #81c995; }
 .veo3-log-warning { color: #fdd663; }
 .veo3-log-error { color: #f28b82; }
-
-.veo3-highlight-target {
-  outline: 3px solid #ea4335 !important;
-  outline-offset: 2px !important;
-  box-shadow: 0 0 16px rgba(234, 67, 53, 0.7) !important;
-}

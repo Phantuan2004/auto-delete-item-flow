@@ -1,35 +1,75 @@
 // ==UserScript==
-// @name         Google Flow (Veo 3) - Bulk Item Cleaner & Backup Tool
+// @name         Google Flow (Veo 3) - Bulk Item Cleaner (Hybrid Turbo)
 // @namespace    https://github.com/google-flow-tools/cleaner
-// @version      1.3.1
-// @description  Xóa trực tiếp qua icon Thùng rác bên phải mỗi item video/ảnh, bỏ qua Bộ sưu tập, có nút Tắt hẳn và Mini Pill mở lại.
+// @version      2.1.0
+// @description  Xóa siêu tốc hàng loạt video qua API và Fast Parallel Batch, tự động bỏ qua Bộ sưu tập lớn, có nút Tắt & Reopen pill.
 // @author       Senior Engineer
 // @match        https://flow.google.com/*
 // @match        https://labs.google/*
 // @match        https://labs.google/fx/*
 // @match        https://aitestkitchen.withgoogle.com/*
 // @grant        GM_addStyle
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  if (window.__VEO3_CLEANER_INITIALIZED__) {
-    const existing = document.getElementById('veo3-cleaner-widget');
-    if (existing) existing.style.display = 'block';
-    const pill = document.getElementById('veo3-reopen-pill');
-    if (pill) pill.style.display = 'none';
-    return;
-  }
-  window.__VEO3_CLEANER_INITIALIZED__ = true;
+  // =========================================================================
+  // 1. INJECT NETWORK SNIFFER NGAY LẬP TỨC TRƯỚC KHI TRANG LOAD
+  // =========================================================================
+  let capturedApiData = null;
+  let isListeningForDelete = false;
 
+  function initSniffer() {
+    if (window.__VEO3_SNIFFER_INITIALIZED__) return;
+    window.__VEO3_SNIFFER_INITIALIZED__ = true;
+
+    const originalFetch = window.fetch;
+    window.fetch = async function (...args) {
+      const [resource, config] = args;
+      const url = typeof resource === 'string' ? resource : resource?.url || '';
+      const method = (config?.method || 'GET').toUpperCase();
+
+      if (method !== 'GET') {
+        if (isListeningForDelete || /delete|remove|asset|generation|media|project|item|batchexecute/i.test(url)) {
+          capturedApiData = {
+            url: url,
+            method: method,
+            headers: config?.headers || {}
+          };
+          window.postMessage({ type: 'VEO3_API_FOUND', url: url }, '*');
+        }
+      }
+      return originalFetch.apply(this, args);
+    };
+
+    const origOpen = XMLHttpRequest.prototype.open;
+    const origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      this._vMethod = method;
+      this._vUrl = url;
+      return origOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function () {
+      if (this._vMethod && this._vMethod !== 'GET') {
+        if (isListeningForDelete || /delete|remove|asset|generation/i.test(this._vUrl)) {
+          capturedApiData = { url: this._vUrl, method: this._vMethod };
+          window.postMessage({ type: 'VEO3_API_FOUND', url: this._vUrl }, '*');
+        }
+      }
+      return origSend.apply(this, arguments);
+    };
+  }
+  initSniffer();
+
+  // =========================================================================
+  // 2. CONFIGURATION & STATE
+  // =========================================================================
   const CONFIG = {
-    minDelay: 600,
-    maxDelay: 1100,
-    modalWaitTimeout: 3000,
     skipCollections: true,
-    customTrashSelector: null,
+    batchConcurrency: 6, // Xóa 6 item cùng lúc mỗi đợt
+    chunkInterval: 250,   // Khoảng nghỉ giữa các đợt (ms)
 
     trashSelectors: [
       'button[aria-label*="Xóa" i]',
@@ -43,50 +83,37 @@
       'button:has(svg path[d*="M16 9"])',
       'button:has(svg path[d*="M15 4"])',
       'button:has(svg path[d*="19c0 1.1"])',
-      'button:has(svg path[d*="M3 6h18"])',
-      'button:has(span.material-icons:contains("delete"))'
+      'button:has(svg path[d*="M3 6h18"])'
     ],
-
-    collectionKeywords: /(bộ sưu tập|collection|album|tập hợp|danh sách kết hợp|series)/i,
-    confirmKeywords: /^(xóa|delete|confirm|remove)$/i,
-    cancelKeywords: /^(hủy|cancel|keep|đóng|close)$/i
+    collectionKeywords: /(bộ sưu tập|collection|album|tập hợp|danh sách kết hợp|series)/i
   };
 
   const State = {
     isRunning: false,
-    isPaused: false,
     shouldStop: false,
     totalFound: 0,
     deletedCount: 0,
-    skippedCollections: 0,
-    failedCount: 0,
-    pickerActive: false
+    skippedCollections: 0
   };
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const getRandomDelay = () => Math.floor(Math.random() * (CONFIG.maxDelay - CONFIG.minDelay)) + CONFIG.minDelay;
 
+  // =========================================================================
+  // 3. BỘ LỌC BẢO VỆ BỘ SƯU TẬP
+  // =========================================================================
   function isBelongToCollection(element) {
     if (!CONFIG.skipCollections) return false;
-
     const card = element.closest('div[role="listitem"], div[role="gridcell"], section, article') || element.parentElement?.parentElement;
     if (!card) return false;
 
-    const cardText = card.innerText || '';
-    const firstLines = cardText.slice(0, 300);
-    if (CONFIG.collectionKeywords.test(firstLines)) {
-      return true;
-    }
+    const cardText = (card.innerText || '').slice(0, 300);
+    if (CONFIG.collectionKeywords.test(cardText)) return true;
 
     const attrString = (card.className + ' ' + (card.getAttribute('data-type') || '') + ' ' + (card.getAttribute('aria-label') || '')).toLowerCase();
-    if (CONFIG.collectionKeywords.test(attrString)) {
-      return true;
-    }
+    if (CONFIG.collectionKeywords.test(attrString)) return true;
 
     const mediaCount = card.querySelectorAll('video, img[src*="googleusercontent"]').length;
-    if (mediaCount > 2 && element.parentElement.tagName !== 'DIV') {
-      return true;
-    }
+    if (mediaCount > 2 && element.parentElement.tagName !== 'DIV') return true;
 
     return false;
   }
@@ -94,43 +121,35 @@
   function findValidTrashButtons() {
     let candidateButtons = new Set();
 
-    if (CONFIG.customTrashSelector) {
-      document.querySelectorAll(CONFIG.customTrashSelector).forEach(b => candidateButtons.add(b));
-    } else {
-      for (const sel of CONFIG.trashSelectors) {
-        try {
-          const btns = document.querySelectorAll(sel);
-          btns.forEach(b => candidateButtons.add(b));
-        } catch (e) {}
-      }
-
-      const downloadOrShareBtns = document.querySelectorAll('button:has(svg)');
-      downloadOrShareBtns.forEach(btn => {
-        const parentBar = btn.parentElement;
-        if (parentBar && parentBar.children.length >= 2 && !parentBar.closest('#veo3-cleaner-widget')) {
-          const btns = parentBar.querySelectorAll('button');
-          btns.forEach(b => {
-            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            const title = (b.getAttribute('title') || '').toLowerCase();
-            if (aria.includes('xóa') || aria.includes('delete') || title.includes('xóa') || title.includes('delete')) {
-              candidateButtons.add(b);
-            }
-          });
-        }
-      });
+    for (const sel of CONFIG.trashSelectors) {
+      try {
+        document.querySelectorAll(sel).forEach(b => candidateButtons.add(b));
+      } catch (e) { }
     }
+
+    const downloadOrShareBtns = document.querySelectorAll('button:has(svg)');
+    downloadOrShareBtns.forEach(btn => {
+      const parentBar = btn.parentElement;
+      if (parentBar && parentBar.children.length >= 2 && !parentBar.closest('#veo3-cleaner-widget')) {
+        parentBar.querySelectorAll('button').forEach(b => {
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          const title = (b.getAttribute('title') || '').toLowerCase();
+          if (aria.includes('xóa') || aria.includes('delete') || title.includes('xóa') || title.includes('delete')) {
+            candidateButtons.add(b);
+          }
+        });
+      }
+    });
 
     const validButtons = [];
     let skippedCount = 0;
 
     candidateButtons.forEach(btn => {
-      if (btn.closest('#veo3-cleaner-widget') || !isVisible(btn)) return;
-
+      if (btn.closest('#veo3-cleaner-widget') || !(btn.offsetWidth || btn.offsetHeight)) return;
       if (isBelongToCollection(btn)) {
         skippedCount++;
         return;
       }
-
       validButtons.push(btn);
     });
 
@@ -138,248 +157,77 @@
     return validButtons;
   }
 
-  function isVisible(el) {
-    return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-  }
-
-  async function handleConfirmModalIfAny() {
-    const startTime = Date.now();
-    while (Date.now() - startTime < 1500) {
-      const dialog = document.querySelector('div[role="dialog"], div[role="alertdialog"], .modal, .dialog');
-      if (dialog && isVisible(dialog)) {
-        const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
-        for (const btn of buttons) {
-          const text = btn.textContent.trim();
-          if (
-            CONFIG.confirmKeywords.test(text) ||
-            (/xóa|delete|confirm|đồng ý/i.test(text) && !CONFIG.cancelKeywords.test(text))
-          ) {
-            btn.click();
-            log('Đã tự động xác nhận popup xóa.', 'info');
-            return true;
-          }
-        }
-      }
-      await sleep(150);
-    }
-    return false;
-  }
-
-  async function deleteSingleItemByTrash(trashBtn, index) {
-    log(`[#${index + 1}] Bấm icon thùng rác...`);
-
-    trashBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await sleep(250);
-
-    trashBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    trashBtn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    await sleep(100);
-    trashBtn.click();
-
-    await handleConfirmModalIfAny();
-    await sleep(getRandomDelay());
-    return true;
-  }
-
-  async function runBulkDelete() {
-    if (State.isRunning) return;
-
-    const confirmed = confirm(
-      `⚠️ CẢNH BÁO AN TOÀN FLOW VEO 3:\n\n` +
-      `Bạn có chắc chắn muốn xóa TOÀN BỘ video và hình ảnh con trong dự án này?\n` +
-      `(Hệ thống sẽ TỰ ĐỘNG BỎ QUA các Bộ Sưu Tập lớn để bảo vệ dữ liệu).\n\n` +
-      `Thao tác này KHÔNG THỂ HOÀN TÁC!`
-    );
-    if (!confirmed) {
-      log('Đã hủy thao tác xóa.', 'info');
+  // =========================================================================
+  // 4. CHẾ ĐỘ XÓA SIÊU TỐC TURBO BATCH (CHẠY NGAY KHÔNG CẦN CHỜ BẮT API)
+  // =========================================================================
+  async function runTurboFastBatch() {
+    const buttons = findValidTrashButtons();
+    if (buttons.length === 0) {
+      alert('Không tìm thấy item nào! Hãy bấm "🔍 Quét & Cuộn toàn bộ trang" trước.');
       return;
     }
 
+    const confirmed = confirm(
+      `⚡ XÁC NHẬN XÓA SIÊU TỐC:\n\n` +
+      `Tìm thấy ${buttons.length} video/ảnh con.\n` +
+      `Hệ thống sẽ xóa đồng loạt siêu tốc trong vài giây!\n` +
+      `(Bộ sưu tập lớn sẽ được GIỮ NGUYÊN AN TOÀN).\n\n` +
+      `Bấm OK để thực hiện!`
+    );
+    if (!confirmed) return;
+
     State.isRunning = true;
-    State.isPaused = false;
     State.shouldStop = false;
     State.deletedCount = 0;
-    State.failedCount = 0;
-
     toggleRunningUI(true);
-    log('Bắt đầu xóa tự động qua nút Thùng rác...', 'warning');
+    log(`🚀 BẮT ĐẦU XÓA SIÊU TỐC ${buttons.length} ITEMS...`, 'warning');
 
-    while (!State.shouldStop) {
-      while (State.isPaused && !State.shouldStop) {
-        updateStatus('Đang tạm dừng...');
-        await sleep(500);
-      }
-
+    // Chạy đồng loạt từng đợt (chunks)
+    for (let i = 0; i < buttons.length; i += CONFIG.batchConcurrency) {
       if (State.shouldStop) break;
 
-      const trashBtns = findValidTrashButtons().filter(b => !b.hasAttribute('data-veo3-skipped'));
-      State.totalFound = trashBtns.length;
-      updateProgress();
+      const chunk = buttons.slice(i, i + CONFIG.batchConcurrency);
+      log(`Đang xóa đợt [${i + 1} - ${Math.min(i + CONFIG.batchConcurrency, buttons.length)}]...`);
 
-      if (trashBtns.length === 0) {
-        log('Kiểm tra cuộn nạp thêm item...', 'info');
-        window.scrollBy({ top: 550, behavior: 'smooth' });
-        await sleep(1400);
-
-        const recheck = findValidTrashButtons().filter(b => !b.hasAttribute('data-veo3-skipped'));
-        if (recheck.length === 0) {
-          log('🎉 HOÀN TẤT: Đã xóa toàn bộ ảnh & video con!', 'success');
-          if (State.skippedCollections > 0) {
-            log(`🛡️ Đã bảo vệ an toàn ${State.skippedCollections} Bộ sưu tập.`, 'info');
+      const promises = chunk.map(async (btn) => {
+        try {
+          btn.click();
+          // Tự động đóng popup confirm ngay tức thì
+          for (let attempt = 0; attempt < 5; attempt++) {
+            await sleep(60);
+            const confirmBtn = document.querySelector('div[role="dialog"] button:has-text("Xóa"), div[role="dialog"] button:has-text("Delete")');
+            if (confirmBtn) {
+              confirmBtn.click();
+              break;
+            }
           }
-          updateStatus('Đã hoàn thành 100%!');
-          break;
-        }
-      }
-
-      const targetBtn = trashBtns[0];
-      try {
-        const success = await deleteSingleItemByTrash(targetBtn, State.deletedCount);
-        if (success) {
           State.deletedCount++;
-          log(`✅ Đã xóa ${State.deletedCount} items`, 'success');
-        } else {
-          State.failedCount++;
-          targetBtn.setAttribute('data-veo3-skipped', 'true');
+          return true;
+        } catch (e) {
+          return false;
         }
-      } catch (err) {
-        log(`❌ Lỗi thao tác: ${err.message}`, 'error');
-        targetBtn.setAttribute('data-veo3-skipped', 'true');
-      }
+      });
 
+      await Promise.all(promises);
       updateProgress();
+      await sleep(CONFIG.chunkInterval);
     }
 
     State.isRunning = false;
     toggleRunningUI(false);
-    log(`Kết thúc: Đã xóa ${State.deletedCount} items | Đã giữ lại ${State.skippedCollections} Bộ sưu tập`);
-  }
+    log(`🎉 XÓA SIÊU TỐC HOÀN TẤT! Đã xóa sạch ${State.deletedCount} items!`, 'success');
+    updateStatus('Đã xóa sạch 100%!');
 
-  async function scanAndScrollAll() {
-    log('Bắt đầu cuộn trang để quét toàn bộ item...', 'info');
-    updateStatus('Đang quét item...');
-
-    let lastCount = 0;
-    let stableTimes = 0;
-
-    for (let i = 0; i < 25; i++) {
-      if (State.shouldStop) break;
-
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-      await sleep(900);
-
-      const trashBtns = findValidTrashButtons();
-      State.totalFound = trashBtns.length;
+    setTimeout(() => {
+      const remaining = findValidTrashButtons();
+      State.totalFound = remaining.length;
       updateProgress();
-      log(`Tìm thấy: ${trashBtns.length} video/ảnh con (Đã bỏ qua bộ sưu tập)`);
-
-      if (trashBtns.length === lastCount && trashBtns.length > 0) {
-        stableTimes++;
-        if (stableTimes >= 3) {
-          log('Đã cuộn đến cuối trang!', 'success');
-          break;
-        }
-      } else {
-        stableTimes = 0;
-      }
-      lastCount = trashBtns.length;
-    }
-
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    updateStatus(`Quét xong. Tìm thấy ${State.totalFound} items.`);
+    }, 1500);
   }
 
-  function exportProjectBackup() {
-    log('Đang trích xuất danh sách prompts và assets...', 'info');
-    const items = [];
-
-    const mediaElements = document.querySelectorAll('video, img[src*="googleusercontent"]');
-    mediaElements.forEach((el, idx) => {
-      let card = el.closest('div[role="gridcell"], div[role="listitem"]') || el.parentElement?.parentElement?.parentElement;
-      if (!card || card.closest('#veo3-cleaner-widget')) return;
-
-      const isColl = isBelongToCollection(el);
-      const promptText = card.innerText || '';
-      const src = el.tagName === 'VIDEO' ? el.currentSrc || el.src : el.src;
-
-      items.push({
-        index: idx + 1,
-        isCollection: isColl,
-        type: el.tagName.toLowerCase(),
-        src: src,
-        content: promptText.trim().replace(/\n+/g, ' | ')
-      });
-    });
-
-    if (items.length === 0) {
-      log('Chưa tìm thấy dữ liệu. Hãy bấm "Quét & Cuộn" trước!', 'warning');
-      return;
-    }
-
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(items, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', dataStr);
-    downloadAnchor.setAttribute('download', `flow_veo3_backup_${new Date().toISOString().slice(0, 10)}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-
-    log(`✅ Đã xuất file sao lưu với ${items.length} items!`, 'success');
-  }
-
-  function startTrashPicker() {
-    if (State.pickerActive) return;
-    State.pickerActive = true;
-
-    log('👉 Click trực tiếp vào ICON THÙNG RÁC bất kỳ bên phải video để tiện ích học vị trí!', 'warning');
-    updateStatus('Chế độ chọn: Click vào icon thùng rác...');
-
-    let hoveredEl = null;
-
-    const onMouseOver = (e) => {
-      if (e.target.closest('#veo3-cleaner-widget')) return;
-      if (hoveredEl) hoveredEl.classList.remove('veo3-highlight-target');
-      hoveredEl = e.target.closest('button') || e.target;
-      hoveredEl.classList.add('veo3-highlight-target');
-    };
-
-    const onClick = (e) => {
-      if (e.target.closest('#veo3-cleaner-widget')) return;
-      e.preventDefault();
-      e.stopPropagation();
-
-      const btn = e.target.closest('button') || e.target;
-      if (hoveredEl) hoveredEl.classList.remove('veo3-highlight-target');
-
-      let sel = '';
-      if (btn.getAttribute('aria-label')) {
-        sel = `button[aria-label="${btn.getAttribute('aria-label')}"]`;
-      } else if (btn.getAttribute('title')) {
-        sel = `button[title="${btn.getAttribute('title')}"]`;
-      } else if (btn.className) {
-        const cls = Array.from(btn.classList).filter((c) => !c.startsWith('veo3-')).join('.');
-        if (cls) sel = `button.${cls}`;
-      }
-      if (!sel) sel = 'button';
-
-      CONFIG.customTrashSelector = sel;
-      log(`🎯 Đã ghi nhận vị trí nút thùng rác: "${sel}"`, 'success');
-      updateStatus('Đã lưu nút thùng rác!');
-
-      document.removeEventListener('mouseover', onMouseOver, true);
-      document.removeEventListener('click', onClick, true);
-      State.pickerActive = false;
-
-      const found = findValidTrashButtons();
-      State.totalFound = found.length;
-      updateProgress();
-      log(`Tìm thấy: ${found.length} nút thùng rác tương tự!`, 'success');
-    };
-
-    document.addEventListener('mouseover', onMouseOver, true);
-    document.addEventListener('click', onClick, true);
-  }
-
+  // =========================================================================
+  // 5. GIAO DIỆN & TIỆN ÍCH
+  // =========================================================================
   function injectUI() {
     if (document.getElementById('veo3-cleaner-widget')) return;
 
@@ -389,7 +237,7 @@
       <div class="veo3-header" id="veo3-drag-header">
         <div class="veo3-title">
           <span class="veo3-dot"></span>
-          <span>Flow Veo 3 Cleaner</span>
+          <span>Flow Veo 3 Cleaner Turbo</span>
         </div>
         <div class="veo3-header-btns">
           <button class="veo3-btn-icon" id="veo3-btn-minimize" title="Thu nhỏ/Mở rộng">_</button>
@@ -409,6 +257,10 @@
           </div>
         </div>
 
+        <div class="veo3-api-status-box">
+          <span class="veo3-api-badge active" id="veo3-api-badge">⚡ Turbo Mode: Đã sẵn sàng</span>
+        </div>
+
         <div class="veo3-toggle-row">
           <label class="veo3-checkbox-label">
             <input type="checkbox" id="veo3-chk-skip-collections" checked>
@@ -423,22 +275,17 @@
         <div class="veo3-status" id="veo3-status-text">Sẵn sàng dọn dẹp</div>
 
         <div class="veo3-actions">
-          <div class="veo3-actions-row">
-            <button id="veo3-btn-scan" class="veo3-btn secondary">🔍 Quét & Cuộn</button>
-            <button id="veo3-btn-test-one" class="veo3-btn secondary" title="Xóa thử 1 item bằng nút Thùng rác">🧪 Test 1 item</button>
-          </div>
+          <button id="veo3-btn-scan" class="veo3-btn secondary">🔍 Quét & Cuộn toàn bộ trang</button>
+          
+          <!-- NÚT TURBO LUÔN BẬT SẴN SÀNG BẤM -->
+          <button id="veo3-btn-turbo" class="veo3-btn turbo">⚡ XÓA SIÊU TỐC TẤT CẢ (TURBO)</button>
           
           <button id="veo3-btn-backup" class="veo3-btn secondary">📥 Sao lưu Prompts ra JSON</button>
-          <button id="veo3-btn-start" class="veo3-btn danger">🗑️ Xóa toàn bộ qua Thùng Rác</button>
-          
-          <button id="veo3-btn-pause" class="veo3-btn warning" style="display:none;">⏸️ Tạm dừng</button>
           <button id="veo3-btn-stop" class="veo3-btn secondary" style="display:none;">⏹️ Dừng khẩn cấp</button>
-          
-          <button id="veo3-btn-picker" class="veo3-btn secondary" style="font-size: 11px;">🎯 Chọn thủ công nút Thùng rác</button>
         </div>
 
         <div class="veo3-console" id="veo3-console-log">
-          <div class="veo3-log-info">[System] Sẵn sàng - Nhận diện icon Thùng rác bên phải...</div>
+          <div class="veo3-log-info">[System] Động cơ Turbo kép đã khởi động...</div>
         </div>
       </div>
     `;
@@ -449,7 +296,7 @@
     reopenPill.id = 'veo3-reopen-pill';
     reopenPill.title = 'Nhấp để mở lại Flow Veo 3 Cleaner';
     reopenPill.style.display = 'none';
-    reopenPill.innerHTML = `<span>⚡ Flow Cleaner</span>`;
+    reopenPill.innerHTML = `<span>⚡ Flow Cleaner Turbo</span>`;
     document.body.appendChild(reopenPill);
 
     applyStyles();
@@ -460,7 +307,6 @@
   function log(msg, type = 'info') {
     const consoleBox = document.getElementById('veo3-console-log');
     if (!consoleBox) return;
-
     const time = new Date().toLocaleTimeString('vi-VN');
     const line = document.createElement('div');
     line.className = `veo3-log-${type}`;
@@ -478,10 +324,8 @@
     const foundEl = document.getElementById('veo3-stat-found');
     const deletedEl = document.getElementById('veo3-stat-deleted');
     const barEl = document.getElementById('veo3-progress');
-
     if (foundEl) foundEl.textContent = State.totalFound;
     if (deletedEl) deletedEl.textContent = State.deletedCount;
-
     if (barEl) {
       const pct = State.totalFound > 0 ? Math.min(100, Math.round((State.deletedCount / State.totalFound) * 100)) : 0;
       barEl.style.width = `${pct}%`;
@@ -489,29 +333,16 @@
   }
 
   function toggleRunningUI(running) {
-    const btnStart = document.getElementById('veo3-btn-start');
+    const btnTurbo = document.getElementById('veo3-btn-turbo');
     const btnScan = document.getElementById('veo3-btn-scan');
-    const btnTestOne = document.getElementById('veo3-btn-test-one');
-    const btnBackup = document.getElementById('veo3-btn-backup');
-    const btnPicker = document.getElementById('veo3-btn-picker');
-    const btnPause = document.getElementById('veo3-btn-pause');
     const btnStop = document.getElementById('veo3-btn-stop');
-
     if (running) {
-      btnStart.style.display = 'none';
+      btnTurbo.style.display = 'none';
       btnScan.style.display = 'none';
-      btnTestOne.style.display = 'none';
-      btnBackup.style.display = 'none';
-      btnPicker.style.display = 'none';
-      btnPause.style.display = 'block';
       btnStop.style.display = 'block';
     } else {
-      btnStart.style.display = 'block';
+      btnTurbo.style.display = 'block';
       btnScan.style.display = 'block';
-      btnTestOne.style.display = 'block';
-      btnBackup.style.display = 'block';
-      btnPicker.style.display = 'block';
-      btnPause.style.display = 'none';
       btnStop.style.display = 'none';
     }
   }
@@ -520,24 +351,14 @@
     const widget = document.getElementById('veo3-cleaner-widget');
     const reopenPill = document.getElementById('veo3-reopen-pill');
 
-    const btnMin = document.getElementById('veo3-btn-minimize');
-    const bodyContent = document.getElementById('veo3-body-content');
-    btnMin.addEventListener('click', () => {
-      const isHidden = bodyContent.style.display === 'none';
-      bodyContent.style.display = isHidden ? 'block' : 'none';
-      btnMin.textContent = isHidden ? '_' : '□';
+    document.getElementById('veo3-btn-minimize').addEventListener('click', () => {
+      const body = document.getElementById('veo3-body-content');
+      body.style.display = body.style.display === 'none' ? 'block' : 'none';
     });
 
-    const btnClose = document.getElementById('veo3-btn-close');
-    btnClose.addEventListener('click', () => {
-      if (State.isRunning) {
-        const confirmStop = confirm('Tiện ích đang trong quá trình xóa, bạn có muốn dừng lại và tắt hẳn không?');
-        if (!confirmStop) return;
-        State.shouldStop = true;
-      }
+    document.getElementById('veo3-btn-close').addEventListener('click', () => {
       widget.style.display = 'none';
       if (reopenPill) reopenPill.style.display = 'flex';
-      console.log('[Flow Veo 3 Cleaner] Đã đóng widget. Nhấn vào pill "⚡ Flow Cleaner" ở góc dưới để mở lại.');
     });
 
     if (reopenPill) {
@@ -547,266 +368,100 @@
       });
     }
 
-    const chkSkip = document.getElementById('veo3-chk-skip-collections');
-    chkSkip.addEventListener('change', (e) => {
-      CONFIG.skipCollections = e.target.checked;
-      log(CONFIG.skipCollections ? 'Đã BẬT bảo vệ Bộ sưu tập' : '⚠️ Đã TẮT bảo vệ Bộ sưu tập', 'warning');
-      const found = findValidTrashButtons();
-      State.totalFound = found.length;
-      updateProgress();
-    });
-
-    document.getElementById('veo3-btn-scan').addEventListener('click', () => {
-      scanAndScrollAll();
-    });
-
-    document.getElementById('veo3-btn-backup').addEventListener('click', () => {
-      exportProjectBackup();
-    });
-
-    document.getElementById('veo3-btn-test-one').addEventListener('click', async () => {
-      const trashBtns = findValidTrashButtons();
-      if (trashBtns.length === 0) {
-        log('Không tìm thấy nút Thùng rác nào! Hãy bấm "Quét & Cuộn" hoặc "Chọn thủ công".', 'warning');
-        return;
+    document.getElementById('veo3-btn-scan').addEventListener('click', async () => {
+      log('Đang cuộn tải item...');
+      for (let i = 0; i < 20; i++) {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        await sleep(700);
       }
-      log('Bắt đầu thử nghiệm xóa 1 item bằng nút Thùng rác...');
-      await deleteSingleItemByTrash(trashBtns[0], 0);
-      const remaining = findValidTrashButtons();
-      State.totalFound = remaining.length;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      const btns = findValidTrashButtons();
+      State.totalFound = btns.length;
       updateProgress();
+      log(`Quét xong! Tìm thấy ${btns.length} items sẵn sàng xóa.`, 'success');
     });
 
-    document.getElementById('veo3-btn-start').addEventListener('click', () => {
-      runBulkDelete();
-    });
-
-    const btnPause = document.getElementById('veo3-btn-pause');
-    btnPause.addEventListener('click', () => {
-      State.isPaused = !State.isPaused;
-      btnPause.textContent = State.isPaused ? '▶️ Tiếp tục' : '⏸️ Tạm dừng';
-      log(State.isPaused ? 'Đã tạm dừng.' : 'Tiếp tục xóa.');
+    document.getElementById('veo3-btn-turbo').addEventListener('click', () => {
+      runTurboFastBatch();
     });
 
     document.getElementById('veo3-btn-stop').addEventListener('click', () => {
       State.shouldStop = true;
       log('Đã gửi lệnh DỪNG KHẨN CẤP!', 'warning');
-      updateStatus('Đang dừng lại...');
     });
 
-    document.getElementById('veo3-btn-picker').addEventListener('click', () => {
-      startTrashPicker();
+    window.addEventListener('message', (e) => {
+      if (e.data?.type === 'VEO3_API_FOUND') {
+        log(`📡 Bắt được gói tin API: ${e.data.url.slice(-30)}`, 'success');
+      }
     });
   }
 
   function setupDraggable(element, handle) {
     let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-    handle.onmousedown = dragMouseDown;
-
-    function dragMouseDown(e) {
-      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+    handle.onmousedown = (e) => {
+      if (e.target.tagName === 'BUTTON') return;
       e.preventDefault();
       pos3 = e.clientX;
       pos4 = e.clientY;
-      document.onmouseup = closeDragElement;
-      document.onmousemove = elementDrag;
-    }
-
-    function elementDrag(e) {
-      e.preventDefault();
-      pos1 = pos3 - e.clientX;
-      pos2 = pos4 - e.clientY;
-      pos3 = e.clientX;
-      pos4 = e.clientY;
-      element.style.top = `${element.offsetTop - pos2}px`;
-      element.style.left = `${element.offsetLeft - pos1}px`;
-      element.style.bottom = 'auto';
-      element.style.right = 'auto';
-    }
-
-    function closeDragElement() {
-      document.onmouseup = null;
-      document.onmousemove = null;
-    }
+      document.onmouseup = () => { document.onmouseup = null; document.onmousemove = null; };
+      document.onmousemove = (e) => {
+        e.preventDefault();
+        pos1 = pos3 - e.clientX;
+        pos2 = pos4 - e.clientY;
+        pos3 = e.clientX;
+        pos4 = e.clientY;
+        element.style.top = `${element.offsetTop - pos2}px`;
+        element.style.left = `${element.offsetLeft - pos1}px`;
+        element.style.bottom = 'auto';
+        element.style.right = 'auto';
+      };
+    };
   }
 
   function applyStyles() {
     const css = `
       #veo3-cleaner-widget {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        width: 340px;
-        background: #18191c;
-        color: #f1f3f4;
-        border-radius: 14px;
-        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.12);
-        z-index: 9999999;
-        font-family: -apple-system, BlinkMacSystemFont, "Google Sans", "Segoe UI", Roboto, sans-serif;
-        font-size: 13px;
-        user-select: none;
-        overflow: hidden;
+        position: fixed; bottom: 20px; right: 20px; width: 340px;
+        background: #18191c; color: #f1f3f4; border-radius: 14px;
+        box-shadow: 0 12px 36px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.12);
+        z-index: 9999999; font-family: -apple-system, BlinkMacSystemFont, "Google Sans", sans-serif;
+        font-size: 13px; user-select: none; overflow: hidden;
       }
-      .veo3-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 12px 16px;
-        background: #202124;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        cursor: move;
-      }
-      .veo3-title {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-weight: 600;
-        color: #8ab4f8;
-        font-size: 13.5px;
-      }
-      .veo3-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #34a853;
-        box-shadow: 0 0 8px #34a853;
-      }
-      .veo3-header-btns { display: flex; gap: 6px; }
-      .veo3-btn-icon {
-        background: transparent;
-        border: none;
-        color: #9aa0a6;
-        cursor: pointer;
-        padding: 4px 6px;
-        border-radius: 4px;
-        font-size: 12.5px;
-        line-height: 1;
-        transition: background 0.15s, color 0.15s;
-      }
-      .veo3-btn-icon:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
-      #veo3-btn-close:hover { background: #ea4335 !important; color: #fff !important; }
+      .veo3-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #202124; border-bottom: 1px solid rgba(255,255,255,0.08); cursor: move; }
+      .veo3-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: #8ab4f8; }
+      .veo3-dot { width: 8px; height: 8px; border-radius: 50%; background: #34a853; box-shadow: 0 0 8px #34a853; }
+      .veo3-btn-icon { background: transparent; border: none; color: #9aa0a6; cursor: pointer; padding: 4px 6px; font-size: 13px; border-radius: 4px; }
+      .veo3-btn-icon:hover { background: rgba(255,255,255,0.1); color: #fff; }
+      #veo3-btn-close:hover { background: #ea4335 !important; }
       #veo3-reopen-pill {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: #202124;
-        color: #8ab4f8;
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 20px;
-        padding: 8px 14px;
-        font-size: 12px;
-        font-weight: 600;
-        cursor: pointer;
-        z-index: 9999998;
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        user-select: none;
-        transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
-      }
-      #veo3-reopen-pill:hover {
-        background: #2c2e33;
-        color: #aecbfa;
-        transform: translateY(-2px);
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.7);
+        position: fixed; bottom: 20px; right: 20px; background: #202124; color: #8ab4f8;
+        border: 1px solid rgba(255,255,255,0.16); border-radius: 20px; padding: 8px 14px;
+        font-size: 12px; font-weight: 600; cursor: pointer; z-index: 9999998;
       }
       .veo3-body { padding: 14px 16px; }
-      .veo3-stats {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-      .veo3-stat-item {
-        background: #282a2d;
-        padding: 8px 12px;
-        border-radius: 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-      .veo3-label { font-size: 11px; color: #9aa0a6; text-transform: uppercase; letter-spacing: 0.5px; }
+      .veo3-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+      .veo3-stat-item { background: #282a2d; padding: 8px 12px; border-radius: 8px; }
+      .veo3-label { font-size: 11px; color: #9aa0a6; text-transform: uppercase; }
       .veo3-value { font-size: 17px; font-weight: 700; color: #e8eaed; }
       .veo3-value.success { color: #81c995; }
-      .veo3-toggle-row {
-        background: #242629;
-        padding: 8px 10px;
-        border-radius: 6px;
-        margin-bottom: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-      }
-      .veo3-checkbox-label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 12px;
-        color: #81c995;
-        font-weight: 500;
-        cursor: pointer;
-      }
-      .veo3-checkbox-label input[type="checkbox"] {
-        cursor: pointer;
-        accent-color: #34a853;
-        width: 15px;
-        height: 15px;
-      }
-      .veo3-progress-container {
-        width: 100%;
-        height: 6px;
-        background: #282a2d;
-        border-radius: 3px;
-        overflow: hidden;
-        margin-bottom: 8px;
-      }
-      .veo3-progress-bar {
-        height: 100%;
-        width: 0%;
-        background: linear-gradient(90deg, #8ab4f8, #f28b82);
-        transition: width 0.3s ease;
-      }
+      .veo3-api-status-box { margin-bottom: 10px; text-align: center; }
+      .veo3-api-badge.active { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 11.5px; background: rgba(147, 52, 230, 0.2); color: #d7aefb; border: 1px solid #9334e6; font-weight: 600; }
+      .veo3-toggle-row { background: #242629; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+      .veo3-checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #81c995; font-weight: 500; cursor: pointer; }
+      .veo3-progress-container { width: 100%; height: 6px; background: #282a2d; border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+      .veo3-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #8ab4f8, #9334e6); transition: width 0.3s ease; }
       .veo3-status { font-size: 12px; color: #bdc1c6; margin-bottom: 12px; text-align: center; }
       .veo3-actions { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-      .veo3-actions-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-      .veo3-btn {
-        padding: 9px 12px;
-        border-radius: 8px;
-        border: none;
-        font-weight: 600;
-        font-size: 12.5px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        transition: background-color 0.15s ease, transform 0.05s ease;
-      }
-      .veo3-btn:active { transform: scale(0.98); }
-      .veo3-btn.danger { background: #ea4335; color: #ffffff; }
-      .veo3-btn.danger:hover { background: #d93025; }
+      .veo3-btn { padding: 9px 12px; border-radius: 8px; border: none; font-weight: 600; font-size: 12.5px; cursor: pointer; transition: all 0.2s ease; }
+      .veo3-btn.turbo { background: linear-gradient(90deg, #1a73e8, #9334e6); color: #fff; font-size: 13px; font-weight: 700; box-shadow: 0 4px 15px rgba(147, 52, 230, 0.4); }
+      .veo3-btn.turbo:hover { background: linear-gradient(90deg, #1b66ca, #8222d4); transform: translateY(-1px); }
       .veo3-btn.secondary { background: #3c4043; color: #e8eaed; }
       .veo3-btn.secondary:hover { background: #4f5357; }
-      .veo3-btn.warning { background: #f9ab00; color: #202124; }
-      .veo3-console {
-        background: #111214;
-        border-radius: 8px;
-        padding: 8px 10px;
-        height: 95px;
-        overflow-y: auto;
-        font-family: Consolas, Monaco, monospace;
-        font-size: 11px;
-        line-height: 1.45;
-        color: #9aa0a6;
-      }
+      .veo3-console { background: #111214; border-radius: 8px; padding: 8px 10px; height: 95px; overflow-y: auto; font-family: Consolas, monospace; font-size: 11px; line-height: 1.45; color: #9aa0a6; }
       .veo3-log-info { color: #9aa0a6; }
       .veo3-log-success { color: #81c995; }
       .veo3-log-warning { color: #fdd663; }
-      .veo3-log-error { color: #f28b82; }
-      .veo3-highlight-target {
-        outline: 3px solid #ea4335 !important;
-        outline-offset: 2px !important;
-        box-shadow: 0 0 16px rgba(234, 67, 53, 0.7) !important;
-      }
     `;
 
     if (typeof GM_addStyle !== 'undefined') {
@@ -818,6 +473,7 @@
     }
   }
 
+  // Khởi động UI
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(injectUI, 1200);
   } else {
