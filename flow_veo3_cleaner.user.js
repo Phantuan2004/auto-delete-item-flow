@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Google Flow (Veo 3) - Bulk Item Cleaner & Backup Tool
 // @namespace    https://github.com/google-flow-tools/cleaner
-// @version      1.3.0
-// @description  Xóa trực tiếp qua icon Thùng rác bên phải mỗi item video/ảnh, tự động bỏ qua Bộ sưu tập lớn để bảo vệ dữ liệu trên flow.google.com
+// @version      1.3.1
+// @description  Xóa trực tiếp qua icon Thùng rác bên phải mỗi item video/ảnh, bỏ qua Bộ sưu tập, có nút Tắt hẳn và Mini Pill mở lại.
 // @author       Senior Engineer
 // @match        https://flow.google.com/*
 // @match        https://labs.google/*
@@ -18,6 +18,8 @@
   if (window.__VEO3_CLEANER_INITIALIZED__) {
     const existing = document.getElementById('veo3-cleaner-widget');
     if (existing) existing.style.display = 'block';
+    const pill = document.getElementById('veo3-reopen-pill');
+    if (pill) pill.style.display = 'none';
     return;
   }
   window.__VEO3_CLEANER_INITIALIZED__ = true;
@@ -391,6 +393,7 @@
         </div>
         <div class="veo3-header-btns">
           <button class="veo3-btn-icon" id="veo3-btn-minimize" title="Thu nhỏ/Mở rộng">_</button>
+          <button class="veo3-btn-icon" id="veo3-btn-close" title="Tắt hẳn tiện ích">✕</button>
         </div>
       </div>
 
@@ -441,6 +444,14 @@
     `;
 
     document.body.appendChild(widget);
+
+    const reopenPill = document.createElement('div');
+    reopenPill.id = 'veo3-reopen-pill';
+    reopenPill.title = 'Nhấp để mở lại Flow Veo 3 Cleaner';
+    reopenPill.style.display = 'none';
+    reopenPill.innerHTML = `<span>⚡ Flow Cleaner</span>`;
+    document.body.appendChild(reopenPill);
+
     applyStyles();
     setupDraggable(widget, document.getElementById('veo3-drag-header'));
     bindUIEvents();
@@ -506,6 +517,9 @@
   }
 
   function bindUIEvents() {
+    const widget = document.getElementById('veo3-cleaner-widget');
+    const reopenPill = document.getElementById('veo3-reopen-pill');
+
     const btnMin = document.getElementById('veo3-btn-minimize');
     const bodyContent = document.getElementById('veo3-body-content');
     btnMin.addEventListener('click', () => {
@@ -513,6 +527,25 @@
       bodyContent.style.display = isHidden ? 'block' : 'none';
       btnMin.textContent = isHidden ? '_' : '□';
     });
+
+    const btnClose = document.getElementById('veo3-btn-close');
+    btnClose.addEventListener('click', () => {
+      if (State.isRunning) {
+        const confirmStop = confirm('Tiện ích đang trong quá trình xóa, bạn có muốn dừng lại và tắt hẳn không?');
+        if (!confirmStop) return;
+        State.shouldStop = true;
+      }
+      widget.style.display = 'none';
+      if (reopenPill) reopenPill.style.display = 'flex';
+      console.log('[Flow Veo 3 Cleaner] Đã đóng widget. Nhấn vào pill "⚡ Flow Cleaner" ở góc dưới để mở lại.');
+    });
+
+    if (reopenPill) {
+      reopenPill.addEventListener('click', () => {
+        widget.style.display = 'block';
+        reopenPill.style.display = 'none';
+      });
+    }
 
     const chkSkip = document.getElementById('veo3-chk-skip-collections');
     chkSkip.addEventListener('change', (e) => {
@@ -644,11 +677,40 @@
         border: none;
         color: #9aa0a6;
         cursor: pointer;
-        padding: 4px;
+        padding: 4px 6px;
         border-radius: 4px;
-        font-size: 13px;
+        font-size: 12.5px;
+        line-height: 1;
+        transition: background 0.15s, color 0.15s;
       }
       .veo3-btn-icon:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+      #veo3-btn-close:hover { background: #ea4335 !important; color: #fff !important; }
+      #veo3-reopen-pill {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: #202124;
+        color: #8ab4f8;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 20px;
+        padding: 8px 14px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        z-index: 9999998;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        user-select: none;
+        transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      #veo3-reopen-pill:hover {
+        background: #2c2e33;
+        color: #aecbfa;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.7);
+      }
       .veo3-body { padding: 14px 16px; }
       .veo3-stats {
         display: grid;
