@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Google Flow (Veo 3) - Bulk Item Cleaner",
+  "version": "1.0.0",
+  "description": "Tiện ích tự động xóa hàng loạt video, hình ảnh trong các dự án Flow Veo 3 trên flow.google.com",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://flow.google.com/*",
+        "https://labs.google/*",
+        "https://aitestkitchen.withgoogle.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": ["activeTab"]
+}
+

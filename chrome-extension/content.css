@@ -1,0 +1,266 @@
+/* =========================================================
+   Flow Veo 3 Cleaner - Widget Overlay Styles v1.3.1
+   ========================================================= */
+
+#veo3-cleaner-widget {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 340px;
+  background: #18191c;
+  color: #f1f3f4;
+  border-radius: 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.12);
+  z-index: 9999999;
+  font-family: -apple-system, BlinkMacSystemFont, "Google Sans", "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  user-select: none;
+  overflow: hidden;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.veo3-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #202124;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: move;
+}
+
+.veo3-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #8ab4f8;
+  font-size: 13.5px;
+}
+
+.veo3-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #34a853;
+  box-shadow: 0 0 8px #34a853;
+}
+
+.veo3-header-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.veo3-btn-icon {
+  background: transparent;
+  border: none;
+  color: #9aa0a6;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+
+.veo3-btn-icon:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+#veo3-btn-close:hover {
+  background: #ea4335 !important;
+  color: #ffffff !important;
+}
+
+/* Nút nhỏ Reopen Pill mở lại khi widget đã tắt */
+#veo3-reopen-pill {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: #202124;
+  color: #8ab4f8;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 20px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 9999998;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#veo3-reopen-pill:hover {
+  background: #2c2e33;
+  color: #aecbfa;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.7);
+}
+
+.veo3-body {
+  padding: 14px 16px;
+}
+
+.veo3-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.veo3-stat-item {
+  background: #282a2d;
+  padding: 8px 12px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.veo3-label {
+  font-size: 11px;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.veo3-value {
+  font-size: 17px;
+  font-weight: 700;
+  color: #e8eaed;
+}
+
+.veo3-value.success {
+  color: #81c995;
+}
+
+.veo3-toggle-row {
+  background: #242629;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.veo3-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #81c995;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.veo3-checkbox-label input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: #34a853;
+  width: 15px;
+  height: 15px;
+}
+
+.veo3-progress-container {
+  width: 100%;
+  height: 6px;
+  background: #282a2d;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.veo3-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #8ab4f8, #f28b82);
+  transition: width 0.3s ease;
+}
+
+.veo3-status {
+  font-size: 12px;
+  color: #bdc1c6;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.veo3-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.veo3-actions-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.veo3-btn {
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: none;
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background-color 0.15s ease, transform 0.05s ease;
+}
+
+.veo3-btn:active {
+  transform: scale(0.98);
+}
+
+.veo3-btn.danger {
+  background: #ea4335;
+  color: #ffffff;
+}
+
+.veo3-btn.danger:hover {
+  background: #d93025;
+}
+
+.veo3-btn.secondary {
+  background: #3c4043;
+  color: #e8eaed;
+}
+
+.veo3-btn.secondary:hover {
+  background: #4f5357;
+}
+
+.veo3-btn.warning {
+  background: #f9ab00;
+  color: #202124;
+}
+
+.veo3-console {
+  background: #111214;
+  border-radius: 8px;
+  padding: 8px 10px;
+  height: 95px;
+  overflow-y: auto;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #9aa0a6;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.veo3-log-info { color: #9aa0a6; }
+.veo3-log-success { color: #81c995; }
+.veo3-log-warning { color: #fdd663; }
+.veo3-log-error { color: #f28b82; }
+
+.veo3-highlight-target {
+  outline: 3px solid #ea4335 !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 16px rgba(234, 67, 53, 0.7) !important;
+}
