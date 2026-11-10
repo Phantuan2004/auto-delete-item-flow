@@ -55,8 +55,8 @@
   // 2. CONFIGURATION & STATE
   const CONFIG = {
     skipCollections: true,
-    batchConcurrency: 6,
-    chunkInterval: 250,
+    scanDelay: 350,
+    deleteTimeout: 5000,
 
     trashSelectors: [
       'button[aria-label*="Xóa" i]',
@@ -88,7 +88,7 @@
   // 3. BỘ LỌC BẢO VỆ BỘ SƯU TẬP
   function isBelongToCollection(element) {
     if (!CONFIG.skipCollections) return false;
-    const card = element.closest('div[role="listitem"], div[role="gridcell"], section, article') || element.parentElement?.parentElement;
+    const card = element.closest('[role="listitem"], [role="gridcell"], article') || element.parentElement?.parentElement;
     if (!card) return false;
 
     const cardText = (card.innerText || '').slice(0, 300);
@@ -98,31 +98,39 @@
     if (CONFIG.collectionKeywords.test(attrString)) return true;
 
     const mediaCount = card.querySelectorAll('video, img[src*="googleusercontent"]').length;
-    if (mediaCount > 2 && element.parentElement.tagName !== 'DIV') return true;
+    if (mediaCount > 2 && element.parentElement?.tagName !== 'DIV') return true;
 
     return false;
   }
 
+  function isVisible(element) {
+    if (!(element.offsetWidth || element.offsetHeight || element.getClientRects().length)) return false;
+    const style = window.getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+
+  function getActionLabel(element) {
+    return [
+      element.getAttribute('aria-label'),
+      element.getAttribute('title'),
+      element.getAttribute('data-testid'),
+      element.getAttribute('data-tooltip'),
+      element.innerText,
+      element.textContent
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+
   function findValidTrashButtons() {
-    let candidateButtons = new Set();
+    const candidateButtons = new Set();
 
     for (const sel of CONFIG.trashSelectors) {
-      try {
-        document.querySelectorAll(sel).forEach(b => candidateButtons.add(b));
-      } catch (e) {}
+      document.querySelectorAll(sel).forEach(b => candidateButtons.add(b));
     }
 
-    const downloadOrShareBtns = document.querySelectorAll('button:has(svg)');
-    downloadOrShareBtns.forEach(btn => {
-      const parentBar = btn.parentElement;
-      if (parentBar && parentBar.children.length >= 2 && !parentBar.closest('#veo3-cleaner-widget')) {
-        parentBar.querySelectorAll('button').forEach(b => {
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          const title = (b.getAttribute('title') || '').toLowerCase();
-          if (aria.includes('xóa') || aria.includes('delete') || title.includes('xóa') || title.includes('delete')) {
-            candidateButtons.add(b);
-          }
-        });
+    document.querySelectorAll('button, [role="button"]').forEach(button => {
+      const label = getActionLabel(button);
+      if (/(delete|remove|trash|xóa|xoá|thùng rác)/i.test(label)) {
+        candidateButtons.add(button);
       }
     });
 
@@ -130,7 +138,7 @@
     let skippedCount = 0;
 
     candidateButtons.forEach(btn => {
-      if (btn.closest('#veo3-cleaner-widget') || !(btn.offsetWidth || btn.offsetHeight)) return;
+      if (btn.closest('#veo3-cleaner-widget') || !isVisible(btn) || btn.disabled) return;
       if (isBelongToCollection(btn)) {
         skippedCount++;
         return;
@@ -142,68 +150,219 @@
     return validButtons;
   }
 
-  // 4. CHẾ ĐỘ XÓA SIÊU TỐC TURBO BATCH
-  async function runTurboFastBatch() {
-    const buttons = findValidTrashButtons();
-    if (buttons.length === 0) {
-      alert('Không tìm thấy item nào! Hãy bấm "🔍 Quét & Cuộn toàn bộ trang" trước.');
-      return;
+  function getScrollableElements() {
+    return Array.from(document.querySelectorAll('body *')).filter(element => {
+      if (element.closest('#veo3-cleaner-widget')) return false;
+      const style = window.getComputedStyle(element);
+      return /(auto|scroll|overlay)/.test(style.overflowY) &&
+        element.scrollHeight > element.clientHeight + 20 &&
+        element.clientHeight > 0;
+    });
+  }
+
+  function getItemKey(button) {
+    const card = button.closest('[role="listitem"], [role="gridcell"], article') || button.parentElement?.parentElement;
+    if (!card) return getActionLabel(button);
+
+    const id = [
+      card.getAttribute('data-id'),
+      card.getAttribute('data-asset-id'),
+      card.getAttribute('data-testid'),
+      card.id
+    ].filter(Boolean).join('|');
+    const href = card.querySelector('a[href]')?.getAttribute('href') || '';
+    const mediaElement = card.querySelector('img, video');
+    const media = mediaElement?.currentSrc || mediaElement?.getAttribute('src') ||
+      card.querySelector('video')?.getAttribute('poster') || '';
+    const text = (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+    return [id, href, media, text, getActionLabel(button)].filter(Boolean).join('|') ||
+      card.outerHTML.slice(0, 1000);
+  }
+
+  async function scanAllItems(onProgress, onItem) {
+    const foundButtons = new Map();
+    const scrollables = getScrollableElements();
+    const positions = new Map(scrollables.map(element => [element, element.scrollTop]));
+    const root = document.scrollingElement || document.documentElement;
+    const useWindow = root.scrollHeight > window.innerHeight + 20;
+    const windowPosition = window.scrollY;
+
+    const collect = async () => {
+      let processedCount = 0;
+      for (const button of findValidTrashButtons()) {
+        const key = getItemKey(button);
+        foundButtons.set(key, button);
+        if (onItem && await onItem(button, key)) processedCount++;
+      }
+      if (onProgress) onProgress(foundButtons.size);
+      return processedCount;
+    };
+
+    await collect();
+
+    if (useWindow) {
+      window.scrollTo(0, 0);
+      await sleep(CONFIG.scanDelay);
+      let previousHeight = -1;
+      let stableBottomPasses = 0;
+      for (let step = 0; step < 300 && stableBottomPasses < 3 && !State.shouldStop; step++) {
+        let processedCount = await collect();
+        while (processedCount > 0 && !State.shouldStop) processedCount = await collect();
+        const height = root.scrollHeight;
+        const atBottom = window.scrollY + window.innerHeight >= height - 4;
+        if (atBottom && height === previousHeight) stableBottomPasses++;
+        else stableBottomPasses = 0;
+        previousHeight = height;
+        if (!atBottom) window.scrollBy(0, Math.max(300, Math.floor(window.innerHeight * 0.8)));
+        await sleep(CONFIG.scanDelay);
+      }
+      await collect();
     }
 
-    const confirmed = confirm(
-      `⚡ XÁC NHẬN XÓA SIÊU TỐC:\n\n` +
-      `Tìm thấy ${buttons.length} video/ảnh con.\n` +
-      `Hệ thống sẽ xóa đồng loạt siêu tốc trong vài giây!\n` +
-      `(Bộ sưu tập lớn sẽ được GIỮ NGUYÊN AN TOÀN).\n\n` +
-      `Bấm OK để thực hiện!`
-    );
-    if (!confirmed) return;
+    for (const element of scrollables) {
+      if (!element.isConnected) continue;
+      element.scrollTop = 0;
+      await sleep(CONFIG.scanDelay);
+      let previousHeight = -1;
+      let stableBottomPasses = 0;
+      for (let step = 0; step < 300 && stableBottomPasses < 3 && !State.shouldStop; step++) {
+        let processedCount = await collect();
+        while (processedCount > 0 && !State.shouldStop) processedCount = await collect();
+        const height = element.scrollHeight;
+        const atBottom = element.scrollTop + element.clientHeight >= height - 4;
+        if (atBottom && height === previousHeight) stableBottomPasses++;
+        else stableBottomPasses = 0;
+        previousHeight = height;
+        if (!atBottom) element.scrollTop += Math.max(250, Math.floor(element.clientHeight * 0.8));
+        await sleep(CONFIG.scanDelay);
+      }
+      await collect();
+    }
 
+    positions.forEach((top, element) => {
+      if (element.isConnected) element.scrollTop = top;
+    });
+    if (useWindow) window.scrollTo(0, windowPosition);
+    updateStatus(`Quét xong: tìm thấy ${foundButtons.size} nút xóa.`);
+    return Array.from(foundButtons.keys());
+  }
+
+  function findDeleteConfirmation() {
+    const dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+    for (const dialog of dialogs) {
+      const buttons = dialog.querySelectorAll('button, [role="button"]');
+      for (const button of buttons) {
+        const label = getActionLabel(button);
+        if (/(delete|remove|xóa|xoá|thùng rác)/i.test(label) && isVisible(button) && !button.disabled) {
+          return button;
+        }
+      }
+    }
+    return null;
+  }
+
+  async function waitForRemoval(button, card) {
+    const deadline = Date.now() + CONFIG.deleteTimeout;
+    while (Date.now() < deadline) {
+      if (!button.isConnected || (card && !card.isConnected)) return true;
+      await sleep(100);
+    }
+    return !button.isConnected || (card && !card.isConnected);
+  }
+
+  async function deleteOne(button) {
+    if (!button.isConnected || !isVisible(button)) return false;
+    const card = button.closest('[role="listitem"], [role="gridcell"], article') || button.parentElement?.parentElement;
+    button.click();
+
+    let confirmation = null;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      confirmation = findDeleteConfirmation();
+      if (confirmation) break;
+      if (!button.isConnected || (card && !card.isConnected)) return true;
+      await sleep(100);
+    }
+
+    if (confirmation) {
+      confirmation.click();
+      for (let attempt = 0; attempt < 50; attempt++) {
+        if (!button.isConnected || (card && !card.isConnected)) return true;
+        if (!findDeleteConfirmation()) {
+          await sleep(300);
+          return !button.isConnected || (card && !card.isConnected);
+        }
+        await sleep(100);
+      }
+      return false;
+    }
+
+    return waitForRemoval(button, card);
+  }
+
+  // 4. XÓA TUẦN TỰ ĐỂ TRÁNH XUNG ĐỘT HỘP THOẠI
+  async function runTurboFastBatch() {
+    if (State.isRunning) return;
     State.isRunning = true;
     State.shouldStop = false;
-    State.deletedCount = 0;
     toggleRunningUI(true);
-    log(`🚀 BẮT ĐẦU XÓA SIÊU TỐC ${buttons.length} ITEMS...`, 'warning');
+    try {
+      const buttons = await scanAllItems();
+      if (State.shouldStop) {
+        updateStatus('Đã dừng trước khi xóa.');
+        return;
+      }
+      State.totalFound = buttons.length;
+      updateProgress();
+      if (buttons.length === 0) {
+        updateStatus('Không tìm thấy nút xóa nào trên trang.');
+        alert('Không tìm thấy item nào. Hãy mở dự án và thử quét lại.');
+        return;
+      }
 
-    for (let i = 0; i < buttons.length; i += CONFIG.batchConcurrency) {
-      if (State.shouldStop) break;
+      const confirmed = confirm(
+        `⚠️ XÁC NHẬN XÓA:\n\n` +
+        `Tìm thấy ${buttons.length} nút xóa.\n` +
+        `Các item sẽ được xóa lần lượt để xử lý đúng hộp thoại xác nhận.\n` +
+        `(Bộ sưu tập lớn sẽ được GIỮ NGUYÊN AN TOÀN).\n\n` +
+        `Bấm OK để thực hiện!`
+      );
+      if (!confirmed) return;
 
-      const chunk = buttons.slice(i, i + CONFIG.batchConcurrency);
-      log(`Đang xóa đợt [${i + 1} - ${Math.min(i + CONFIG.batchConcurrency, buttons.length)}]...`);
+      State.shouldStop = false;
+      State.deletedCount = 0;
+      updateProgress();
+      log(`Bắt đầu xóa tuần tự ${buttons.length} items...`, 'warning');
 
-      const promises = chunk.map(async (btn) => {
-        try {
-          btn.click();
-          for (let attempt = 0; attempt < 5; attempt++) {
-            await sleep(60);
-            const confirmBtn = document.querySelector('div[role="dialog"] button:has-text("Xóa"), div[role="dialog"] button:has-text("Delete")');
-            if (confirmBtn) {
-              confirmBtn.click();
-              break;
-            }
-          }
-          State.deletedCount++;
-          return true;
-        } catch (e) {
-          return false;
+      const processedItems = new Set();
+      await scanAllItems(count => {
+        if (count > State.totalFound) {
+          State.totalFound = count;
+          updateProgress();
         }
+      }, async (button, key) => {
+        if (State.shouldStop || !button.isConnected || !isVisible(button) || processedItems.has(key)) return false;
+        processedItems.add(key);
+        updateStatus(`Đang xử lý ${processedItems.size}/${State.totalFound}...`);
+        if (await deleteOne(button)) {
+          State.deletedCount++;
+          log(`Đã xác nhận xóa ${State.deletedCount}/${State.totalFound}.`, 'success');
+        } else {
+          log(`Không xác nhận được item ${processedItems.size}; bỏ qua để tránh báo sai.`, 'warning');
+        }
+        updateProgress();
+        return true;
       });
 
-      await Promise.all(promises);
-      updateProgress();
-      await sleep(CONFIG.chunkInterval);
+      const remaining = Math.max(0, State.totalFound - State.deletedCount);
+      log(`Kết thúc: xác nhận xóa ${State.deletedCount}/${State.totalFound}; còn ${remaining} item chưa xác nhận.`, remaining === 0 ? 'success' : 'warning');
+      updateStatus(State.shouldStop ? 'Đã dừng theo yêu cầu.' : `Đã xác nhận xóa ${State.deletedCount}/${State.totalFound}. Còn ${remaining} item chưa xác nhận.`);
+    } catch (error) {
+      log(`Lỗi khi quét hoặc xóa: ${error.message}`, 'error');
+      updateStatus('Đã xảy ra lỗi. Xem nhật ký để biết chi tiết.');
+    } finally {
+      State.isRunning = false;
+      toggleRunningUI(false);
     }
-
-    State.isRunning = false;
-    toggleRunningUI(false);
-    log(`🎉 XÓA SIÊU TỐC HOÀN TẤT! Đã xóa sạch ${State.deletedCount} items!`, 'success');
-    updateStatus('Đã xóa sạch 100%!');
-
-    setTimeout(() => {
-      const remaining = findValidTrashButtons();
-      State.totalFound = remaining.length;
-      updateProgress();
-    }, 1500);
   }
 
   // 5. GIAO DIỆN & TIỆN ÍCH
@@ -216,7 +375,7 @@
       <div class="veo3-header" id="veo3-drag-header">
         <div class="veo3-title">
           <span class="veo3-dot"></span>
-          <span>Flow Veo 3 Cleaner Turbo</span>
+          <span>Flow Veo 3 Cleaner</span>
         </div>
         <div class="veo3-header-btns">
           <button class="veo3-btn-icon" id="veo3-btn-minimize" title="Thu nhỏ/Mở rộng">_</button>
@@ -237,7 +396,7 @@
         </div>
 
         <div class="veo3-api-status-box">
-          <span class="veo3-api-badge active" id="veo3-api-badge">⚡ Turbo Mode: Đã sẵn sàng</span>
+          <span class="veo3-api-badge active" id="veo3-api-badge">Quét toàn bộ dự án</span>
         </div>
 
         <div class="veo3-toggle-row">
@@ -256,14 +415,14 @@
         <div class="veo3-actions">
           <button id="veo3-btn-scan" class="veo3-btn secondary">🔍 Quét & Cuộn toàn bộ trang</button>
           
-          <button id="veo3-btn-turbo" class="veo3-btn turbo">⚡ XÓA SIÊU TỐC TẤT CẢ (TURBO)</button>
+          <button id="veo3-btn-turbo" class="veo3-btn turbo">🗑️ XÓA TẤT CẢ (TUẦN TỰ AN TOÀN)</button>
           
           <button id="veo3-btn-backup" class="veo3-btn secondary">📥 Sao lưu Prompts ra JSON</button>
           <button id="veo3-btn-stop" class="veo3-btn secondary" style="display:none;">⏹️ Dừng khẩn cấp</button>
         </div>
 
         <div class="veo3-console" id="veo3-console-log">
-          <div class="veo3-log-info">[System] Động cơ Turbo kép đã khởi động...</div>
+          <div class="veo3-log-info">[System] Trình quét dự án đã sẵn sàng.</div>
         </div>
       </div>
     `;
@@ -345,17 +504,28 @@
       });
     }
 
+    document.getElementById('veo3-chk-skip-collections').addEventListener('change', (event) => {
+      CONFIG.skipCollections = event.target.checked;
+    });
+
     document.getElementById('veo3-btn-scan').addEventListener('click', async () => {
-      log('Đang cuộn tải item...');
-      for (let i = 0; i < 20; i++) {
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        await sleep(700);
+      if (State.isRunning) return;
+      State.isRunning = true;
+      State.shouldStop = false;
+      toggleRunningUI(true);
+      log('Đang quét các vùng cuộn để tải item...');
+      try {
+        const buttons = await scanAllItems(count => updateStatus(`Đã phát hiện ${count} nút xóa...`));
+        State.totalFound = buttons.length;
+        updateProgress();
+        log(State.shouldStop ? `Đã dừng quét tại ${buttons.length} nút.` : `Quét xong! Tìm thấy ${buttons.length} nút xóa.`, State.shouldStop ? 'warning' : 'success');
+      } catch (error) {
+        log(`Lỗi khi quét: ${error.message}`, 'error');
+        updateStatus('Quét thất bại. Xem nhật ký để biết chi tiết.');
+      } finally {
+        State.isRunning = false;
+        toggleRunningUI(false);
       }
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      const btns = findValidTrashButtons();
-      State.totalFound = btns.length;
-      updateProgress();
-      log(`Quét xong! Tìm thấy ${btns.length} items sẵn sàng xóa.`, 'success');
     });
 
     document.getElementById('veo3-btn-turbo').addEventListener('click', () => {
